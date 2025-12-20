@@ -20,9 +20,10 @@ RENDER_EXTERNAL_URL = os.environ["RENDER_EXTERNAL_URL"]
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = RENDER_EXTERNAL_URL + WEBHOOK_PATH
 
-# Инициализация Telegram Application
+# Создаём Application, но НЕ инициализируем его здесь
 application = Application.builder().token(BOT_TOKEN).build()
 
+# Регистрация обработчиков
 application.add_handler(CommandHandler("start", start_handler))
 application.add_handler(CallbackQueryHandler(cabinet_handler, pattern="^cabinet$"))
 application.add_handler(CallbackQueryHandler(request_subscription_handler, pattern="^request_subscription$"))
@@ -32,14 +33,18 @@ application.add_handler(CallbackQueryHandler(back_to_start_handler, pattern="^ba
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: установка webhook
-    logging.info(f"Setting webhook to {WEBHOOK_URL}")
+    # --- Startup ---
+    logging.info("Initializing Telegram Application...")
+    await application.initialize()  # 🔑 Обязательно!
+    logging.info("Setting webhook...")
     await application.bot.set_webhook(url=WEBHOOK_URL)
-    logging.info("✅ Webhook set successfully")
+    logging.info(f"✅ Webhook set to {WEBHOOK_URL}")
     yield
-    # Shutdown: очистка (опционально)
+    # --- Shutdown ---
+    logging.info("Shutting down Telegram Application...")
     await application.bot.delete_webhook(drop_pending_updates=True)
-    logging.info("🧹 Webhook cleaned up")
+    await application.shutdown()  # 🔑 Обязательно!
+    logging.info("🧹 Cleanup complete")
 
 app = FastAPI(lifespan=lifespan)
 
@@ -52,4 +57,4 @@ async def telegram_webhook(request: Request):
 
 @app.get("/")
 async def health_check():
-    return {"status": "ok", "bot": "running"}
+    return {"status": "ok", "webhook": WEBHOOK_PATH}
