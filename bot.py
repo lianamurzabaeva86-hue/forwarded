@@ -1,6 +1,7 @@
 # bot.py
 import os
 import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 from telegram import Update
@@ -14,21 +15,17 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
-# Инициализация
+# Переменные
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 PORT = int(os.environ.get("PORT", "10000"))
-RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
-
-if not RENDER_EXTERNAL_URL:
-    raise RuntimeError("RENDER_EXTERNAL_URL must be set in environment variables")
-
+RENDER_EXTERNAL_URL = os.environ["RENDER_EXTERNAL_URL"]
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = RENDER_EXTERNAL_URL + WEBHOOK_PATH
 
-# Telegram Application
+# Инициализация Telegram Application (без запуска)
 application = Application.builder().token(BOT_TOKEN).build()
 
-# Обработчики
+# Регистрация обработчиков
 application.add_handler(CommandHandler("start", start_handler))
 application.add_handler(CallbackQueryHandler(cabinet_handler, pattern="^cabinet$"))
 application.add_handler(CallbackQueryHandler(request_subscription_handler, pattern="^request_subscription$"))
@@ -36,14 +33,20 @@ application.add_handler(CallbackQueryHandler(admin_panel_handler, pattern="^admi
 application.add_handler(CallbackQueryHandler(admin_action_handler, pattern=r"^admin_(grant|revoke)_\d+$"))
 application.add_handler(CallbackQueryHandler(back_to_start_handler, pattern="^back_to_start$"))
 
-# FastAPI app
-app = FastAPI()
-
-@app.on_event("startup")
-async def setup_webhook():
+# Lifespan — замена on_event
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
     logging.info(f"Setting webhook to {WEBHOOK_URL}")
     await application.bot.set_webhook(url=WEBHOOK_URL)
-    logging.info("Webhook set successfully")
+    logging.info("✅ Webhook set successfully")
+    yield
+    # Shutdown (опционально)
+    await application.bot.delete_webhook(drop_pending_updates=True)
+    logging.info("🧹 Webhook deleted on shutdown")
+
+# FastAPI app с lifespan
+app = FastAPI(lifespan=lifespan)
 
 @app.post(WEBHOOK_PATH)
 async def telegram_webhook(request: Request):
@@ -54,4 +57,4 @@ async def telegram_webhook(request: Request):
 
 @app.get("/")
 async def health_check():
-    return {"status": "ok", "bot": "running"}
+    return {"status": "ok", "webhook": WEBHOOK_URL}
