@@ -177,4 +177,4 @@ async def admin_action_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.edit_message_text(msg)
 
 async def back_to_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await start_handler(update, context)
+    await start_handler(update, co
