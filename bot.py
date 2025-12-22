@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from telegram import Update
 
-# === Настройка логирования (совместимо с Better Stack) ===
+# === Логирование ===
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -81,7 +81,8 @@ async def telegram_webhook(request: Request):
         logger.error(f"❌ Ошибка при обработке webhook: {e}", exc_info=True)
         return {"ok": False}
 
-# === Health check ===
+# === Health checks для Render и Better Stack ===
 @app.get("/")
+@app.get("/healthz")
 async def health_check():
     return {"status": "ok", "bot": "running", "webhook": WEBHOOK_PATH}
