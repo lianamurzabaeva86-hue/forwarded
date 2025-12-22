@@ -1,4 +1,4 @@
-# bot.py
+# bot.
 import os
 import logging
 from contextlib import asynccontextmanager
