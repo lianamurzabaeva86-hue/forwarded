@@ -1,11 +1,12 @@
 # handlers.py
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ContextTypes
 from supabase import create_client
 from datetime import datetime, timezone, timedelta
 import os
 from utils import has_active_access, days_left
 
+# === Настройки ===
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_TG_ID = int(os.environ["ADMIN_TG_ID"])
 OWNER_TG_ID = int(os.environ["OWNER_TG_ID"])
@@ -14,6 +15,7 @@ TABLE_NAME = os.getenv("USERS_TABLE", "users")
 
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
+# === Вспомогательные функции ===
 def get_user(tg_id: int):
     res = supabase.table(TABLE_NAME).select("*").eq("tg_id", tg_id).execute()
     return res.data[0] if res.data else None
@@ -53,6 +55,18 @@ def revoke_access(tg_id: int):
 def get_all_users():
     return supabase.table(TABLE_NAME).select("*").execute().data
 
+# === Генерация Reply-клавиатуры ===
+def get_main_keyboard(tg_id: int):
+    buttons = [
+        [KeyboardButton("Подключить пересыл")],
+        [KeyboardButton("Личный кабинет")]
+    ]
+    if tg_id == ADMIN_TG_ID:
+        buttons.append([KeyboardButton("Админ")])
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=False)
+
+# === Handlers ===
+
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     tg_id = user.id
@@ -65,59 +79,109 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"После его окончания требуется подписка: {SUBSCRIPTION_PRICE}"
     )
 
-    buttons = [
-        [InlineKeyboardButton("Подключить пересыл", callback_data="setup_relay")],
-        [InlineKeyboardButton("Личный кабинет", callback_data="cabinet")]
-    ]
+    await update.message.reply_text(
+        text,
+        reply_markup=get_main_keyboard(tg_id)
+    )
 
-    if tg_id == ADMIN_TG_ID:
-        buttons.append([InlineKeyboardButton("Админ", callback_data="admin_panel")])
-
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-
+# --- Подключить пересыл ---
 async def setup_relay_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Нельзя использовать ReplyKeyboard в callback_query!
+    # Поэтому оставляем InlineKeyboard для этого действия
     query = update.callback_query
     await query.answer()
     tg_id = query.from_user.id
     db_user = get_user(tg_id)
 
     if not has_active_access(db_user):
-        await query.edit_message_text("❌ У вас нет активной подписки. Сначала оформите доступ в «Личном кабинете».")
-        return
-
-    await query.edit_message_text("📬 Отправьте ссылку на исходный канал/чат (откуда пересылать).")
-
-async def cabinet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    tg_id = query.from_user.id
-    db_user = get_user(tg_id)
-
-    if not db_user:
-        await query.edit_message_text("❌ Ошибка: пользователь не найден.")
-        return
-
-    if db_user["awaiting_payment"]:
-        text = "⏳ Вы запросили подписку. Владелец скоро свяжется с вами в личных сообщениях."
-    elif has_active_access(db_user):
-        days = days_left(db_user)
-        text = f"✅ У вас активна подписка!\nОсталось дней: {days}"
+        text = "❌ У вас нет активной подписки. Сначала оформите доступ в «Личном кабинете»."
     else:
-        text = (
-            "❌ Пробный период закончился.\n"
-            f"Стоимость подписки: {SUBSCRIPTION_PRICE}\n"
-            "Нажмите «Да», чтобы приобрести."
-        )
-        await query.edit_message_text(
-            text,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Да", callback_data="request_subscription")]
-            ])
-        )
-        return
+        text = "📬 Отправьте ссылку на исходный канал/чат (откуда пересылать)."
 
-    await query.edit_message_text(text)
+    # Здесь используем InlineKeyboard, потому что это callback
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Назад", callback_data="back_to_start")]
+        ])
+    )
 
+# --- Личный кабинет ---
+async def cabinet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Если пришли через команду /start или кнопку — можно использовать ReplyKeyboard
+    if update.message:
+        tg_id = update.effective_user.id
+        db_user = get_user(tg_id)
+        if not db_user:
+            await update.message.reply_text("❌ Ошибка: пользователь не найден.", reply_markup=get_main_keyboard(tg_id))
+            return
+
+        if db_user["awaiting_payment"]:
+            text = "⏳ Вы запросили подписку. Владелец скоро свяжется с вами в личных сообщениях."
+            await update.message.reply_text(text, reply_markup=get_main_keyboard(tg_id))
+            return
+
+        if has_active_access(db_user):
+            days = days_left(db_user)
+            text = f"✅ У вас активна подписка!\nОсталось дней: {days}"
+        else:
+            text = (
+                "❌ Пробный период закончился.\n"
+                f"Стоимость подписки: {SUBSCRIPTION_PRICE}\n"
+                "Нажмите «Да», чтобы приобрести."
+            )
+            await update.message.reply_text(
+                text,
+                reply_markup=ReplyKeyboardMarkup([
+                    [KeyboardButton("Да")],
+                    [KeyboardButton("Назад")]
+                ], resize_keyboard=True)
+            )
+            return
+
+        await update.message.reply_text(text, reply_markup=get_main_keyboard(tg_id))
+
+    # Если пришли через callback (например, из админки) — используем Inline
+    elif update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        tg_id = query.from_user.id
+        db_user = get_user(tg_id)
+
+        if not db_user:
+            await query.edit_message_text("❌ Ошибка: пользователь не найден.")
+            return
+
+        if db_user["awaiting_payment"]:
+            text = "⏳ Вы запросили подписку. Владелец скоро свяжется с вами в личных сообщениях."
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Назад", callback_data="back_to_start")]
+            ]))
+            return
+
+        if has_active_access(db_user):
+            days = days_left(db_user)
+            text = f"✅ У вас активна подписка!\nОсталось дней: {days}"
+        else:
+            text = (
+                "❌ Пробный период закончился.\n"
+                f"Стоимость подписки: {SUBSCRIPTION_PRICE}\n"
+                "Нажмите «Да», чтобы приобрести."
+            )
+            await query.edit_message_text(
+                text,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Да", callback_data="request_subscription")],
+                    [InlineKeyboardButton("Назад", callback_data="back_to_start")]
+                ])
+            )
+            return
+
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Назад", callback_data="back_to_start")]
+        ]))
+
+# --- Запрос подписки ---
 async def request_subscription_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -128,7 +192,10 @@ async def request_subscription_handler(update: Update, context: ContextTypes.DEF
     if not username:
         await query.edit_message_text(
             "⚠️ У вас не установлен username в Telegram.\n"
-            "Пожалуйста, установите его в настройках Telegram и нажмите /start снова."
+            "Пожалуйста, установите его в настройках Telegram и нажмите /start снова.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Назад", callback_data="back_to_start")]
+            ])
         )
         return
 
@@ -141,15 +208,21 @@ async def request_subscription_handler(update: Update, context: ContextTypes.DEF
     )
 
     await query.edit_message_text(
-        "✅ Отлично! Владелец скоро свяжется с вами в личных сообщениях для оформления подписки."
+        "✅ Отлично! Владелец скоро свяжется с вами в личных сообщениях для оформления подписки.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Назад", callback_data="back_to_start")]
+        ])
     )
 
+# --- Админка ---
 async def admin_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     users = get_all_users()
     if not users:
-        await query.edit_message_text("Нет пользователей.")
+        await query.edit_message_text("Нет пользователей.", reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Назад", callback_data="back_to_start")]
+        ]))
         return
 
     text = "👥 Список пользователей:\n\n"
@@ -170,6 +243,7 @@ async def admin_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     buttons.append([InlineKeyboardButton("Назад", callback_data="back_to_start")])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
+# --- Действия админа ---
 async def admin_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -183,8 +257,11 @@ async def admin_action_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         revoke_access(tg_id)
         msg = "❌ Доступ отключён."
 
-    await query.edit_message_text(msg)
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("Назад", callback_data="back_to_start")]
+    ]))
 
+# --- Назад к старту ---
 async def back_to_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -194,10 +271,6 @@ async def back_to_start_handler(update: Update, context: ContextTypes.DEFAULT_TY
         "У вас активен **2-дневный бесплатный пробный период**.\n"
         f"После его окончания требуется подписка: {SUBSCRIPTION_PRICE}"
     )
-    buttons = [
-        [InlineKeyboardButton("Подключить пересыл", callback_data="setup_relay")],
-        [InlineKeyboardButton("Личный кабинет", callback_data="cabinet")]
-    ]
-    if tg_id == ADMIN_TG_ID:
-        buttons.append([InlineKeyboardButton("Админ", callback_data="admin_panel")])
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("Назад", callback_data="back_to_start")]
+    ]))
