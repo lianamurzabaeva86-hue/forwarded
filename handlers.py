@@ -6,15 +6,13 @@ from datetime import datetime, timezone, timedelta
 import os
 from utils import has_active_access, days_left
 
-# Переменные окружения
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_TG_ID = int(os.environ["ADMIN_TG_ID"])
 OWNER_TG_ID = int(os.environ["OWNER_TG_ID"])
 SUBSCRIPTION_PRICE = os.getenv("SUBSCRIPTION_PRICE", "150₽/месяц")
+TABLE_NAME = os.getenv("USERS_TABLE", "users")
 
-# Supabase
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
-TABLE_NAME = os.getenv("USERS_TABLE", "users")  # можно задать имя таблицы
 
 def get_user(tg_id: int):
     res = supabase.table(TABLE_NAME).select("*").eq("tg_id", tg_id).execute()
@@ -55,7 +53,6 @@ def revoke_access(tg_id: int):
 def get_all_users():
     return supabase.table(TABLE_NAME).select("*").execute().data
 
-# --- Handlers ---
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     tg_id = user.id
@@ -77,6 +74,18 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append([InlineKeyboardButton("Админ", callback_data="admin_panel")])
 
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+async def setup_relay_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    tg_id = query.from_user.id
+    db_user = get_user(tg_id)
+
+    if not has_active_access(db_user):
+        await query.edit_message_text("❌ У вас нет активной подписки. Сначала оформите доступ в «Личном кабинете».")
+        return
+
+    await query.edit_message_text("📬 Отправьте ссылку на исходный канал/чат (откуда пересылать).")
 
 async def cabinet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -177,4 +186,18 @@ async def admin_action_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.edit_message_text(msg)
 
 async def back_to_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await start_handler(update, co
+    query = update.callback_query
+    await query.answer()
+    tg_id = query.from_user.id
+    text = (
+        "👋 Привет! Это бот для пересылки сообщений с одного канала/группы в другой.\n\n"
+        "У вас активен **2-дневный бесплатный пробный период**.\n"
+        f"После его окончания требуется подписка: {SUBSCRIPTION_PRICE}"
+    )
+    buttons = [
+        [InlineKeyboardButton("Подключить пересыл", callback_data="setup_relay")],
+        [InlineKeyboardButton("Личный кабинет", callback_data="cabinet")]
+    ]
+    if tg_id == ADMIN_TG_ID:
+        buttons.append([InlineKeyboardButton("Админ", callback_data="admin_panel")])
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
