@@ -11,11 +11,14 @@ def has_active_access(user):
 
     now = datetime.now(timezone.utc)
 
+    # Преобразование строки в datetime
     if user.get("subscription_end"):
-        return now <= user["subscription_end"]
+        subscription_end = datetime.fromisoformat(user["subscription_end"])
+        return now <= subscription_end
 
     if user.get("trial_start"):
-        trial_end = user["trial_start"] + timedelta(days=TRIAL_DAYS)
+        trial_start = datetime.fromisoformat(user["trial_start"])
+        trial_end = trial_start + timedelta(days=TRIAL_DAYS)
         return now <= trial_end
 
     return False
@@ -25,9 +28,12 @@ def days_left(user):
         return 0
     now = datetime.now(timezone.utc)
     if user.get("subscription_end"):
-        diff = (user["subscription_end"] - now).days
+        subscription_end = datetime.fromisoformat(user["subscription_end"])
+        diff = (subscription_end - now).days
         return max(0, diff)
     elif user.get("trial_start"):
-        diff = (user["trial_start"] + timedelta(days=TRIAL_DAYS) - now).days
+        trial_start = datetime.fromisoformat(user["trial_start"])
+        trial_end = trial_start + timedelta(days=TRIAL_DAYS)
+        diff = (trial_end - now).days
         return max(0, diff)
     return 0
