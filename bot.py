@@ -3,7 +3,7 @@ import os
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram import Update
 
 # === Логирование ===
@@ -20,12 +20,11 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 # === Импорт обработчиков ===
 from handlers import (
     start_handler,
+    setup_relay_handler,
     cabinet_handler,
     request_subscription_handler,
     admin_panel_handler,
-    admin_action_handler,
     back_to_start_handler,
-    setup_relay_handler,
 )
 
 # === Переменные окружения ===
@@ -40,26 +39,23 @@ application = Application.builder().token(BOT_TOKEN).build()
 # Регистрация обработчика ошибок
 application.add_error_handler(error_handler)
 
-# Регистрация всех обработчиков
+# === РЕГИСТРАЦИЯ ТОЛЬКО MessageHandler (для ReplyKeyboard) ===
 application.add_handler(CommandHandler("start", start_handler))
-application.add_handler(CallbackQueryHandler(setup_relay_handler, pattern="^setup_relay$"))
-application.add_handler(CallbackQueryHandler(cabinet_handler, pattern="^cabinet$"))
-application.add_handler(CallbackQueryHandler(request_subscription_handler, pattern="^request_subscription$"))
-application.add_handler(CallbackQueryHandler(admin_panel_handler, pattern="^admin_panel$"))
-application.add_handler(CallbackQueryHandler(admin_action_handler, pattern=r"^admin_(grant|revoke)_\d+$"))
-application.add_handler(CallbackQueryHandler(back_to_start_handler, pattern="^back_to_start$"))
+application.add_handler(MessageHandler(filters.Text("Подключить пересыл"), setup_relay_handler))
+application.add_handler(MessageHandler(filters.Text("Личный кабинет"), cabinet_handler))
+application.add_handler(MessageHandler(filters.Text("Админ"), admin_panel_handler))
+application.add_handler(MessageHandler(filters.Text("Да"), request_subscription_handler))
+application.add_handler(MessageHandler(filters.Text("Назад"), back_to_start_handler))
 
 # === Lifespan (инициализация и завершение) ===
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # --- Startup ---
     logger.info("Инициализация Telegram Application...")
     await application.initialize()
     logger.info("Установка webhook...")
     await application.bot.set_webhook(url=WEBHOOK_URL)
     logger.info(f"✅ Webhook установлен: {WEBHOOK_URL}")
     yield
-    # --- Shutdown ---
     logger.info("Очистка webhook и завершение работы...")
     await application.bot.delete_webhook(drop_pending_updates=True)
     await application.shutdown()
@@ -81,7 +77,7 @@ async def telegram_webhook(request: Request):
         logger.error(f"❌ Ошибка при обработке webhook: {e}", exc_info=True)
         return {"ok": False}
 
-# === Health checks для Render и Better Stack ===
+# === Health check ===
 @app.get("/")
 @app.get("/healthz")
 async def health_check():
