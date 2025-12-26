@@ -25,6 +25,7 @@ from handlers import (
     request_subscription_handler,
     admin_panel_handler,
     back_to_start_handler,
+    handle_source_link,
 )
 
 # === Переменные окружения ===
@@ -39,15 +40,18 @@ application = Application.builder().token(BOT_TOKEN).build()
 # Регистрация обработчика ошибок
 application.add_error_handler(error_handler)
 
-# === РЕГИСТРАЦИЯ ТОЛЬКО MessageHandler (для ReplyKeyboard) ===
+# === ВАЖНО: порядок обработчиков! ===
 application.add_handler(CommandHandler("start", start_handler))
+# Сначала — обработчик состояний (ожидание ссылки)
+application.add_handler(MessageHandler(filters.TEXT, handle_source_link))
+# Потом — остальные команды
 application.add_handler(MessageHandler(filters.Text("Подключить пересыл"), setup_relay_handler))
 application.add_handler(MessageHandler(filters.Text("Личный кабинет"), cabinet_handler))
 application.add_handler(MessageHandler(filters.Text("Админ"), admin_panel_handler))
 application.add_handler(MessageHandler(filters.Text("Да"), request_subscription_handler))
 application.add_handler(MessageHandler(filters.Text("Назад"), back_to_start_handler))
 
-# === Lifespan (инициализация и завершение) ===
+# === Lifespan ===
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Инициализация Telegram Application...")
