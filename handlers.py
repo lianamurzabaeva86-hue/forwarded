@@ -4,8 +4,9 @@ from telegram.ext import ContextTypes
 from supabase import create_client
 from datetime import datetime, timezone, timedelta
 import os
-from utils import has_active_access
+from utils import has_active_access, days_left
 
+# === Настройки ===
 ADMIN_TG_ID = int(os.environ["ADMIN_TG_ID"])
 OWNER_TG_ID = int(os.environ["OWNER_TG_ID"])
 SUBSCRIPTION_PRICE = os.getenv("SUBSCRIPTION_PRICE", "150₽/месяц")
@@ -13,6 +14,7 @@ TABLE_NAME = os.getenv("USERS_TABLE", "users")
 
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
+# === Вспомогательные функции ===
 def get_user(tg_id: int):
     res = supabase.table(TABLE_NAME).select("*").eq("tg_id", tg_id).execute()
     return res.data[0] if res.data else None
@@ -61,7 +63,7 @@ def get_main_keyboard(tg_id: int):
         buttons.append([KeyboardButton("Админ")])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# === Основные обработчики ===
+# === Обработчики ===
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -112,19 +114,11 @@ async def handle_target_link(update: Update, context: ContextTypes.DEFAULT_TYPE)
         text = update.message.text.strip()
         if text in {"Подключить пересыл", "Личный кабинет", "Админ", "Да", "Назад"}:
             return False
+        tg_id = update.effective_user.id
         source = context.user_data.get("source_link")
         target = text
         
-        # Извлекаем chat_id из ссылки (упрощённо)
-        # В реальности нужно добавить парсинг и проверку
-        await update.message.reply_text(
-            f"✅ Пересылка настроена!\nИз: {source}\nВ: {target}\n\n"
-            "Теперь добавьте этого бота в оба чата и дайте права на чтение и отправку сообщений.",
-            reply_markup=get_main_keyboard(update.effective_user.id)
-        )
-        
-        # Сохраняем в Supabase (только tg_id и ссылки)
-        tg_id = update.effective_user.id
+        # Сохраняем в relay_config
         supabase.table("relay_config").upsert({
             "tg_id": tg_id,
             "source_link": source,
@@ -133,20 +127,15 @@ async def handle_target_link(update: Update, context: ContextTypes.DEFAULT_TYPE)
         }).execute()
         
         context.user_data["awaiting_target"] = False
+        await update.message.reply_text(
+            f"✅ Пересылка настроена!\nИз: {source}\nВ: {target}\n\n"
+            "Теперь добавьте этого бота в оба чата и дайте права:\n"
+            "• В исходном: «Читать сообщения»\n"
+            "• В целевом: «Отправлять сообщения»",
+            reply_markup=get_main_keyboard(tg_id)
+        )
         return True
     return False
-
-async def relay_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Пересылает сообщение, если оно из разрешённого чата"""
-    if not update.message or not update.message.chat:
-        return
-
-    chat_id = update.message.chat.id
-    # Здесь нужно получить список разрешённых source_chat_id для всех пользователей
-    # Для упрощения — пропустим, но в production нужно реализовать
-
-    # Пример: если вы знаете target_chat_id, перешлите туда
-    # await context.bot.forward_message(chat_id=target_chat_id, from_chat_id=chat_id, message_id=update.message.message_id)
 
 async def cabinet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_id = update.effective_user.id
@@ -157,7 +146,6 @@ async def cabinet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if db_user["awaiting_payment"]:
         text = "⏳ Запрос подписки отправлен."
     elif has_active_access(db_user):
-        from utils import days_left
         text = f"✅ Подписка активна. Осталось дней: {days_left(db_user)}"
     else:
         text = f"❌ Пробный период окончен.\nСтоимость: {SUBSCRIPTION_PRICE}"
@@ -205,3 +193,37 @@ async def admin_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def back_to_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start_handler(update, context)
+
+async def relay_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Пересылает сообщение из исходного чата в целевой"""
+    if not update.message or not update.message.chat:
+        return
+
+    chat_username = None
+    if update.message.chat.username:
+        chat_username = f"https://t.me/{update.message.chat.username}"
+    
+    # Получаем все активные настройки пересылки
+    relay_configs = supabase.table("relay_config").select("*").eq("active", True).execute()
+    
+    for config in relay_configs.
+        # Проверяем, совпадает ли чат с source_link
+        if chat_username and config["source_link"] == chat_username:
+            try:
+                # Извлекаем chat_id из target_link
+                target_username = config["target_link"].split("/")[-1]
+                await context.bot.forward_message(
+                    chat_id=f"@{target_username}",
+                    from_chat_id=update.message.chat.id,
+                    message_id=update.message.message_id
+                )
+                logger.info(f"✅ Переслано в {target_username}")
+            except Exception as e:
+                logger.error(f"❌ Ошибка пересылки: {e}")
+                # Можно отправить владельцу уведомление об ошибке
+                await context.bot.send_message(
+                    chat_id=config["tg_id"],
+                    text=f"⚠️ Не удалось переслать сообщение в {config['target_link']}. "
+                         f"Убедитесь, что бот добавлен в чат и имеет права."
+                )
+            break
