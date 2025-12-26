@@ -6,18 +6,15 @@ from fastapi import FastAPI, Request
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram import Update
 
-# === Логирование ===
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
-# === Обработчик ошибок ===
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Произошла ошибка: {context.error}", exc_info=True)
+    logger.error(f"Ошибка: {context.error}", exc_info=True)
 
-# === Импорт обработчиков ===
 from handlers import (
     start_handler,
     setup_relay_handler,
@@ -28,61 +25,50 @@ from handlers import (
     handle_source_link,
 )
 
-# === Переменные окружения ===
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 RENDER_EXTERNAL_URL = os.environ["RENDER_EXTERNAL_URL"]
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = RENDER_EXTERNAL_URL + WEBHOOK_PATH
 
-# === Telegram Application ===
 application = Application.builder().token(BOT_TOKEN).build()
-
-# Регистрация обработчика ошибок
 application.add_error_handler(error_handler)
 
-# === ВАЖНО: порядок обработчиков! ===
+# === РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ (в правильном порядке) ===
 application.add_handler(CommandHandler("start", start_handler))
-# Сначала — обработчик состояний (ожидание ссылки)
-application.add_handler(MessageHandler(filters.TEXT, handle_source_link))
-# Потом — остальные команды
-application.add_handler(MessageHandler(filters.Text("Подключить пересыл"), setup_relay_handler))
-application.add_handler(MessageHandler(filters.Text("Личный кабинет"), cabinet_handler))
-application.add_handler(MessageHandler(filters.Text("Админ"), admin_panel_handler))
-application.add_handler(MessageHandler(filters.Text("Да"), request_subscription_handler))
-application.add_handler(MessageHandler(filters.Text("Назад"), back_to_start_handler))
+application.add_handler(MessageHandler(filters.TEXT, handle_source_link))  # сначала — состояние
+application.add_handler(MessageHandler(filters.Regex(r"^Подключить пересыл$"), setup_relay_handler))
+application.add_handler(MessageHandler(filters.Regex(r"^Личный кабинет$"), cabinet_handler))
+application.add_handler(MessageHandler(filters.Regex(r"^Админ$"), admin_panel_handler))
+application.add_handler(MessageHandler(filters.Regex(r"^Да$"), request_subscription_handler))
+application.add_handler(MessageHandler(filters.Regex(r"^Назад$"), back_to_start_handler))
 
-# === Lifespan ===
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Инициализация Telegram Application...")
+    logger.info("Инициализация бота...")
     await application.initialize()
     logger.info("Установка webhook...")
     await application.bot.set_webhook(url=WEBHOOK_URL)
-    logger.info(f"✅ Webhook установлен: {WEBHOOK_URL}")
+    logger.info(f"✅ Webhook: {WEBHOOK_URL}")
     yield
-    logger.info("Очистка webhook и завершение работы...")
+    logger.info("Завершение работы...")
     await application.bot.delete_webhook(drop_pending_updates=True)
     await application.shutdown()
-    logger.info("🧹 Работа завершена")
 
-# === FastAPI приложение ===
 app = FastAPI(lifespan=lifespan)
 
-# === Webhook endpoint ===
 @app.post(WEBHOOK_PATH)
 async def telegram_webhook(request: Request):
     try:
         json_data = await request.json()
         update = Update.de_json(json_data, application.bot)
         await application.process_update(update)
-        logger.info(f"✅ Обновление обработано: {getattr(update, 'update_id', 'N/A')}")
+        logger.info(f"✅ Обновление {getattr(update, 'update_id', 'N/A')}")
         return {"ok": True}
     except Exception as e:
-        logger.error(f"❌ Ошибка при обработке webhook: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка webhook: {e}", exc_info=True)
         return {"ok": False}
 
-# === Health check ===
 @app.get("/")
 @app.get("/healthz")
 async def health_check():
-    return {"status": "ok", "bot": "running", "webhook": WEBHOOK_PATH}
+    return {"status": "ok", "bot": "running"}
