@@ -11,7 +11,6 @@ def has_active_access(user):
 
     now = datetime.now(timezone.utc)
 
-    # Преобразование строки в datetime
     if user.get("subscription_end"):
         subscription_end = datetime.fromisoformat(user["subscription_end"])
         return now <= subscription_end
