@@ -1,4 +1,5 @@
 # handlers.py
+import logging
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ContextTypes
 from supabase import create_client
@@ -6,7 +7,8 @@ from datetime import datetime, timezone, timedelta
 import os
 from utils import has_active_access, days_left
 
-# === Настройки ===
+logger = logging.getLogger(__name__)
+
 ADMIN_TG_ID = int(os.environ["ADMIN_TG_ID"])
 OWNER_TG_ID = int(os.environ["OWNER_TG_ID"])
 SUBSCRIPTION_PRICE = os.getenv("SUBSCRIPTION_PRICE", "150₽/месяц")
@@ -14,7 +16,6 @@ TABLE_NAME = os.getenv("USERS_TABLE", "users")
 
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
-# === Вспомогательные функции ===
 def get_user(tg_id: int):
     res = supabase.table(TABLE_NAME).select("*").eq("tg_id", tg_id).execute()
     return res.data[0] if res.data else None
@@ -63,7 +64,7 @@ def get_main_keyboard(tg_id: int):
         buttons.append([KeyboardButton("Админ")])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# === Обработчики ===
+# === Handlers ===
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -117,15 +118,14 @@ async def handle_target_link(update: Update, context: ContextTypes.DEFAULT_TYPE)
         tg_id = update.effective_user.id
         source = context.user_data.get("source_link")
         target = text
-        
-        # Сохраняем в relay_config
+
         supabase.table("relay_config").upsert({
             "tg_id": tg_id,
             "source_link": source,
             "target_link": target,
             "active": True
         }).execute()
-        
+
         context.user_data["awaiting_target"] = False
         await update.message.reply_text(
             f"✅ Пересылка настроена!\nИз: {source}\nВ: {target}\n\n"
@@ -195,35 +195,40 @@ async def back_to_start_handler(update: Update, context: ContextTypes.DEFAULT_TY
     await start_handler(update, context)
 
 async def relay_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Пересылает сообщение из исходного чата в целевой"""
     if not update.message or not update.message.chat:
         return
 
-    chat_username = None
+    chat_link = None
     if update.message.chat.username:
-        chat_username = f"https://t.me/{update.message.chat.username}"
-    
-    # Получаем все активные настройки пересылки
-    relay_configs = supabase.table("relay_config").select("*").eq("active", True).execute()
-    
-    for config in relay_configs.
-        # Проверяем, совпадает ли чат с source_link
-        if chat_username and config["source_link"] == chat_username:
-            try:
-                # Извлекаем chat_id из target_link
-                target_username = config["target_link"].split("/")[-1]
-                await context.bot.forward_message(
-                    chat_id=f"@{target_username}",
-                    from_chat_id=update.message.chat.id,
-                    message_id=update.message.message_id
-                )
-                logger.info(f"✅ Переслано в {target_username}")
-            except Exception as e:
-                logger.error(f"❌ Ошибка пересылки: {e}")
-                # Можно отправить владельцу уведомление об ошибке
-                await context.bot.send_message(
-                    chat_id=config["tg_id"],
-                    text=f"⚠️ Не удалось переслать сообщение в {config['target_link']}. "
-                         f"Убедитесь, что бот добавлен в чат и имеет права."
-                )
-            break
+        chat_link = f"https://t.me/{update.message.chat.username}"
+
+    try:
+        response = supabase.table("relay_config").select("*").eq("active", True).execute()
+        configs = response.data
+        if not configs:
+            return
+
+        for config in configs:
+            if chat_link and config["source_link"] == chat_link:
+                try:
+                    target_parts = config["target_link"].strip("/").split("/")
+                    target_username = target_parts[-1]
+                    await context.bot.forward_message(
+                        chat_id=f"@{target_username}",
+                        from_chat_id=update.message.chat.id,
+                        message_id=update.message.message_id
+                    )
+                    logger.info(f"✅ Переслано в @{target_username}")
+                    return
+                except Exception as e:
+                    logger.error(f"❌ Ошибка пересылки: {e}")
+                    try:
+                        await context.bot.send_message(
+                            chat_id=config["tg_id"],
+                            text=f"⚠️ Не удалось переслать сообщение в {config['target_link']}."
+                        )
+                    except:
+                        pass
+                break
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки настроек: {e}")
