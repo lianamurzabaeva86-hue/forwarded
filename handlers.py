@@ -64,7 +64,7 @@ def get_main_keyboard(tg_id: int):
         buttons.append([KeyboardButton("Админ")])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# === Handlers ===
+# === Основные обработчики ===
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -119,12 +119,17 @@ async def handle_target_link(update: Update, context: ContextTypes.DEFAULT_TYPE)
         source = context.user_data.get("source_link")
         target = text
 
-        supabase.table("relay_config").upsert({
-            "tg_id": tg_id,
-            "source_link": source,
-            "target_link": target,
-            "active": True
-        }).execute()
+        try:
+            supabase.table("relay_config").upsert({
+                "tg_id": tg_id,
+                "source_link": source,
+                "target_link": target,
+                "active": True
+            }).execute()
+        except Exception as e:
+            logger.error(f"❌ Ошибка Supabase: {e}")
+            await update.message.reply_text("❌ Ошибка при сохранении. Обратитесь к владельцу.")
+            return True
 
         context.user_data["awaiting_target"] = False
         await update.message.reply_text(
