@@ -4,10 +4,9 @@ from telegram.ext import ContextTypes
 from supabase import create_client
 from datetime import datetime, timezone, timedelta
 import os
-from utils import has_active_access, days_left
+from utils import has_active_access
 
 # === Настройки ===
-BOT_TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_TG_ID = int(os.environ["ADMIN_TG_ID"])
 OWNER_TG_ID = int(os.environ["OWNER_TG_ID"])
 SUBSCRIPTION_PRICE = os.getenv("SUBSCRIPTION_PRICE", "150₽/месяц")
@@ -15,7 +14,6 @@ TABLE_NAME = os.getenv("USERS_TABLE", "users")
 
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
-# === Вспомогательные функции ===
 def get_user(tg_id: int):
     res = supabase.table(TABLE_NAME).select("*").eq("tg_id", tg_id).execute()
     return res.data[0] if res.data else None
@@ -55,7 +53,6 @@ def revoke_access(tg_id: int):
 def get_all_users():
     return supabase.table(TABLE_NAME).select("*").execute().data
 
-# === Генерация клавиатуры ===
 def get_main_keyboard(tg_id: int):
     buttons = [
         [KeyboardButton("Подключить пересыл")],
@@ -63,9 +60,9 @@ def get_main_keyboard(tg_id: int):
     ]
     if tg_id == ADMIN_TG_ID:
         buttons.append([KeyboardButton("Админ")])
-    return ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=False)
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# === Обработчики ===
+# === Основные обработчики ===
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -74,45 +71,37 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     init_user(tg_id, username)
 
     text = (
-        "👋 Привет! Это бот для пересылки сообщений с одного канала/группы в другой.\n\n"
-        "У вас активен **2-дневный бесплатный пробный период**.\n"
-        f"После его окончания требуется подписка: {SUBSCRIPTION_PRICE}"
+        "🔒 Бот не собирает персональные данные.\n"
+        "Используются только технические данные Telegram (ID и username).\n\n"
+        "👋 Привет! Это бот для пересылки сообщений...\n"
+        f"Подписка: {SUBSCRIPTION_PRICE}"
     )
     await update.message.reply_text(text, reply_markup=get_main_keyboard(tg_id))
 
 async def setup_relay_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_id = update.effective_user.id
     db_user = get_user(tg_id)
-
     if not has_active_access(db_user):
-        text = "❌ У вас нет активной подписки. Сначала оформите доступ в «Личном кабинете»."
-        await update.message.reply_text(text, reply_markup=get_main_keyboard(tg_id))
+        await update.message.reply_text(
+            "❌ Нет активной подписки. Оформите в «Личном кабинете».",
+            reply_markup=get_main_keyboard(tg_id)
+        )
         return
-
-    # Устанавливаем состояние: ожидаем ссылку
     context.user_data["awaiting_source"] = True
     await update.message.reply_text(
-        "📬 Отправьте ссылку на исходный канал/чат (откуда пересылать).",
+        "📬 Отправьте ссылку на исходный канал/чат.",
         reply_markup=get_main_keyboard(tg_id)
     )
 
 async def handle_source_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка сообщения, если пользователь ожидает отправить ссылку"""
     if context.user_data.get("awaiting_source"):
         text = update.message.text.strip()
-
-        # Игнорируем нажатия на кнопки
+        # Игнорируем кнопки
         if text in {"Подключить пересыл", "Личный кабинет", "Админ", "Да", "Назад"}:
             return False
-
-        # Очищаем состояние
         context.user_data["awaiting_source"] = False
-
-        # Здесь можно сохранить ссылку в Supabase или context
-        # Например: context.user_data["source_link"] = text
-
         await update.message.reply_text(
-            f"✅ Ссылка получена: {text}\nТеперь отправьте ссылку на целевой чат.",
+            f"✅ Ссылка получена: {text}",
             reply_markup=get_main_keyboard(update.effective_user.id)
         )
         return True
@@ -121,22 +110,16 @@ async def handle_source_link(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def cabinet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_id = update.effective_user.id
     db_user = get_user(tg_id)
-
     if not db_user:
-        await update.message.reply_text("❌ Ошибка: пользователь не найден.", reply_markup=get_main_keyboard(tg_id))
+        await update.message.reply_text("❌ Ошибка.", reply_markup=get_main_keyboard(tg_id))
         return
-
     if db_user["awaiting_payment"]:
-        text = "⏳ Вы запросили подписку. Владелец скоро свяжется с вами в личных сообщениях."
+        text = "⏳ Запрос подписки отправлен."
     elif has_active_access(db_user):
-        days = days_left(db_user)
-        text = f"✅ У вас активна подписка!\nОсталось дней: {days}"
+        from utils import days_left
+        text = f"✅ Подписка активна. Осталось дней: {days_left(db_user)}"
     else:
-        text = (
-            "❌ Пробный период закончился.\n"
-            f"Стоимость подписки: {SUBSCRIPTION_PRICE}\n"
-            "Нажмите «Да», чтобы приобрести."
-        )
+        text = f"❌ Пробный период окончен.\nСтоимость: {SUBSCRIPTION_PRICE}"
         await update.message.reply_text(
             text,
             reply_markup=ReplyKeyboardMarkup([
@@ -145,32 +128,25 @@ async def cabinet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ], resize_keyboard=True)
         )
         return
-
     await update.message.reply_text(text, reply_markup=get_main_keyboard(tg_id))
 
 async def request_subscription_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     tg_id = user.id
     username = user.username
-
     if not username:
         await update.message.reply_text(
-            "⚠️ У вас не установлен username в Telegram.\n"
-            "Пожалуйста, установите его в настройках Telegram и нажмите /start снова.",
+            "⚠️ Установите username в Telegram и нажмите /start.",
             reply_markup=get_main_keyboard(tg_id)
         )
         return
-
     set_awaiting_payment(tg_id, True)
-
     await context.bot.send_message(
         chat_id=OWNER_TG_ID,
-        text=f"🔔 Пользователь @{username} (ID: {tg_id}) хочет купить подписку.\n"
-             f"Свяжитесь с ним в ЛС для оплаты."
+        text=f"🔔 Пользователь @{username} (ID: {tg_id}) хочет купить подписку."
     )
-
     await update.message.reply_text(
-        "✅ Отлично! Владелец скоро свяжется с вами в личных сообщениях для оформления подписки.",
+        "✅ Владелец скоро свяжется с вами.",
         reply_markup=get_main_keyboard(tg_id)
     )
 
@@ -179,13 +155,11 @@ async def admin_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not users:
         await update.message.reply_text("Нет пользователей.", reply_markup=get_main_keyboard(update.effective_user.id))
         return
-
-    text = "👥 Список пользователей:\n\n"
+    text = "👥 Пользователи:\n\n"
     for u in users:
         name = f"@{u['username']}" if u['username'] else f"ID: {u['tg_id']}"
-        status = "🟢" if u.get("is_active", False) else "🔴"
+        status = "🟢" if u.get("is_active") else "🔴"
         text += f"{status} {name}\n"
-
     await update.message.reply_text(text, reply_markup=get_main_keyboard(update.effective_user.id))
 
 async def back_to_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
