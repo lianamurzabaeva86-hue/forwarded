@@ -6,7 +6,6 @@ from datetime import datetime, timezone, timedelta
 import os
 from utils import has_active_access
 
-# === Настройки ===
 ADMIN_TG_ID = int(os.environ["ADMIN_TG_ID"])
 OWNER_TG_ID = int(os.environ["OWNER_TG_ID"])
 SUBSCRIPTION_PRICE = os.getenv("SUBSCRIPTION_PRICE", "150₽/месяц")
@@ -73,12 +72,12 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "🔒 Бот не собирает персональные данные.\n"
         "Используются только технические данные Telegram (ID и username).\n\n"
-        "👋 Привет! Это бот для пересылки сообщений...\n"
+        "👋 Привет! Это бот для пересылки сообщений с одного канала/группы в другой.\n"
         f"Подписка: {SUBSCRIPTION_PRICE}"
     )
     await update.message.reply_text(text, reply_markup=get_main_keyboard(tg_id))
 
-async def setup_relay_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def setup_source_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_id = update.effective_user.id
     db_user = get_user(tg_id)
     if not has_active_access(db_user):
@@ -89,23 +88,65 @@ async def setup_relay_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     context.user_data["awaiting_source"] = True
     await update.message.reply_text(
-        "📬 Отправьте ссылку на исходный канал/чат.",
+        "📬 Отправьте ссылку на исходный канал/группу (откуда пересылать).",
         reply_markup=get_main_keyboard(tg_id)
     )
 
 async def handle_source_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("awaiting_source"):
         text = update.message.text.strip()
-        # Игнорируем кнопки
         if text in {"Подключить пересыл", "Личный кабинет", "Админ", "Да", "Назад"}:
             return False
+        context.user_data["source_link"] = text
         context.user_data["awaiting_source"] = False
+        context.user_data["awaiting_target"] = True
         await update.message.reply_text(
-            f"✅ Ссылка получена: {text}",
+            "📤 Теперь отправьте ссылку на целевой канал/группу (куда пересылать).",
             reply_markup=get_main_keyboard(update.effective_user.id)
         )
         return True
     return False
+
+async def handle_target_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("awaiting_target"):
+        text = update.message.text.strip()
+        if text in {"Подключить пересыл", "Личный кабинет", "Админ", "Да", "Назад"}:
+            return False
+        source = context.user_data.get("source_link")
+        target = text
+        
+        # Извлекаем chat_id из ссылки (упрощённо)
+        # В реальности нужно добавить парсинг и проверку
+        await update.message.reply_text(
+            f"✅ Пересылка настроена!\nИз: {source}\nВ: {target}\n\n"
+            "Теперь добавьте этого бота в оба чата и дайте права на чтение и отправку сообщений.",
+            reply_markup=get_main_keyboard(update.effective_user.id)
+        )
+        
+        # Сохраняем в Supabase (только tg_id и ссылки)
+        tg_id = update.effective_user.id
+        supabase.table("relay_config").upsert({
+            "tg_id": tg_id,
+            "source_link": source,
+            "target_link": target,
+            "active": True
+        }).execute()
+        
+        context.user_data["awaiting_target"] = False
+        return True
+    return False
+
+async def relay_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Пересылает сообщение, если оно из разрешённого чата"""
+    if not update.message or not update.message.chat:
+        return
+
+    chat_id = update.message.chat.id
+    # Здесь нужно получить список разрешённых source_chat_id для всех пользователей
+    # Для упрощения — пропустим, но в production нужно реализовать
+
+    # Пример: если вы знаете target_chat_id, перешлите туда
+    # await context.bot.forward_message(chat_id=target_chat_id, from_chat_id=chat_id, message_id=update.message.message_id)
 
 async def cabinet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_id = update.effective_user.id
