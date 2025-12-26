@@ -1,11 +1,12 @@
 # handlers.py
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import ContextTypes, MessageHandler, filters
+from telegram.ext import ContextTypes
 from supabase import create_client
 from datetime import datetime, timezone, timedelta
 import os
 from utils import has_active_access, days_left
 
+# === Настройки ===
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_TG_ID = int(os.environ["ADMIN_TG_ID"])
 OWNER_TG_ID = int(os.environ["OWNER_TG_ID"])
@@ -14,6 +15,7 @@ TABLE_NAME = os.getenv("USERS_TABLE", "users")
 
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
 
+# === Вспомогательные функции ===
 def get_user(tg_id: int):
     res = supabase.table(TABLE_NAME).select("*").eq("tg_id", tg_id).execute()
     return res.data[0] if res.data else None
@@ -53,7 +55,7 @@ def revoke_access(tg_id: int):
 def get_all_users():
     return supabase.table(TABLE_NAME).select("*").execute().data
 
-# === Генерация Reply-клавиатуры ===
+# === Генерация клавиатуры ===
 def get_main_keyboard(tg_id: int):
     buttons = [
         [KeyboardButton("Подключить пересыл")],
@@ -63,7 +65,7 @@ def get_main_keyboard(tg_id: int):
         buttons.append([KeyboardButton("Админ")])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=False)
 
-# === Handlers ===
+# === Обработчики ===
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -76,26 +78,46 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "У вас активен **2-дневный бесплатный пробный период**.\n"
         f"После его окончания требуется подписка: {SUBSCRIPTION_PRICE}"
     )
+    await update.message.reply_text(text, reply_markup=get_main_keyboard(tg_id))
 
-    await update.message.reply_text(
-        text,
-        reply_markup=get_main_keyboard(tg_id)
-    )
-
-# --- Подключить пересыл ---
 async def setup_relay_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Обрабатываем текстовое сообщение
     tg_id = update.effective_user.id
     db_user = get_user(tg_id)
 
     if not has_active_access(db_user):
         text = "❌ У вас нет активной подписки. Сначала оформите доступ в «Личном кабинете»."
-    else:
-        text = "📬 Отправьте ссылку на исходный канал/чат (откуда пересылать)."
+        await update.message.reply_text(text, reply_markup=get_main_keyboard(tg_id))
+        return
 
-    await update.message.reply_text(text, reply_markup=get_main_keyboard(tg_id))
+    # Устанавливаем состояние: ожидаем ссылку
+    context.user_data["awaiting_source"] = True
+    await update.message.reply_text(
+        "📬 Отправьте ссылку на исходный канал/чат (откуда пересылать).",
+        reply_markup=get_main_keyboard(tg_id)
+    )
 
-# --- Личный кабинет ---
+async def handle_source_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка сообщения, если пользователь ожидает отправить ссылку"""
+    if context.user_data.get("awaiting_source"):
+        text = update.message.text.strip()
+
+        # Игнорируем нажатия на кнопки
+        if text in {"Подключить пересыл", "Личный кабинет", "Админ", "Да", "Назад"}:
+            return False
+
+        # Очищаем состояние
+        context.user_data["awaiting_source"] = False
+
+        # Здесь можно сохранить ссылку в Supabase или context
+        # Например: context.user_data["source_link"] = text
+
+        await update.message.reply_text(
+            f"✅ Ссылка получена: {text}\nТеперь отправьте ссылку на целевой чат.",
+            reply_markup=get_main_keyboard(update.effective_user.id)
+        )
+        return True
+    return False
+
 async def cabinet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_id = update.effective_user.id
     db_user = get_user(tg_id)
@@ -126,7 +148,6 @@ async def cabinet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, reply_markup=get_main_keyboard(tg_id))
 
-# --- Запрос подписки ---
 async def request_subscription_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     tg_id = user.id
@@ -153,7 +174,6 @@ async def request_subscription_handler(update: Update, context: ContextTypes.DEF
         reply_markup=get_main_keyboard(tg_id)
     )
 
-# --- Админка ---
 async def admin_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = get_all_users()
     if not users:
@@ -168,11 +188,5 @@ async def admin_panel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await update.message.reply_text(text, reply_markup=get_main_keyboard(update.effective_user.id))
 
-# --- Действия админа ---
-async def admin_action_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Здесь можно реализовать логику, но пока просто сообщаем
-    await update.message.reply_text("✅ Действие выполнено", reply_markup=get_main_keyboard(update.effective_user.id))
-
-# --- Назад к старту ---
 async def back_to_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start_handler(update, context)
